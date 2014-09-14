@@ -1,3 +1,8 @@
+-- 0.7.0 (Unofficial)
+	New CCONV_UTF_TO_GHT conversion type.
+	Ignore illegal characters.
+	Optimize search routines.
+	Add more than 100 items to conversion table.
 
 -- 0.6.2
 	Add GB-Hans GB-Hant encoding which were used to represent GB charset in Simplified and Traditional.

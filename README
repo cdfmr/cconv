@@ -1,3 +1,6 @@
+This is an unofficial update of cconv which is used in HanzConvert, check ChangeLog file for details.
+
+
 === Introduction ===
 
 A iconv based simplified-traditional chinese conversion tool

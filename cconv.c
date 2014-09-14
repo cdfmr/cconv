@@ -50,6 +50,7 @@ static size_t cconv_utf8(
 static int find_keyword(
 	const char* inbytes  ,
 	size_t*     length   ,
+	size_t		max_length,
 	const language_zh_map *m   ,
 	int         begin    ,
 	int         end      ,
@@ -59,6 +60,7 @@ static int find_keyword(
 static int binary_find(
 	const char* inbytes  ,
 	size_t*     length   ,
+	size_t		max_length,
 	const language_zh_map *m   ,
 	int         begin    ,
 	int         end
@@ -146,9 +148,14 @@ cconv_t cconv_open(const char* tocode, const char* fromcode)
 		else if(0 == strcasecmp(CCONV_CODE_UHT, tocode) || 0 == strcasecmp(CCONV_CODE_UHK, tocode)
 		     || 0 == strcasecmp(CCONV_CODE_UTW, tocode))
 			cd->cconv_cd = CCONV_UTF_TO_UHT;
-		else if(0 == strcasecmp(CCONV_CODE_GBL, tocode))
+		else if(0 == strcasecmp(CCONV_CODE_GBL, tocode) || 0 == strcasecmp(CCONV_CODE_GHS, tocode))
 		{
 			cd->cconv_cd = CCONV_UTF_TO_GBL;
+			cd->utf8_gb  = iconv_open(CCONV_CODE_GBL, CCONV_CODE_UTF);
+		}
+		else if(0 == strcasecmp(CCONV_CODE_GHT, tocode))
+		{
+			cd->cconv_cd = CCONV_UTF_TO_GHT;
 			cd->utf8_gb  = iconv_open(CCONV_CODE_GBL, CCONV_CODE_UTF);
 		}
 		else if(0 == strcasecmp(CCONV_CODE_BIG, tocode))
@@ -162,7 +169,7 @@ cconv_t cconv_open(const char* tocode, const char* fromcode)
 	else
 	if(0 == strcasecmp(CCONV_CODE_BIG, fromcode))
 	{
-		if(0 == strcasecmp(CCONV_CODE_GBL, tocode))
+		if(0 == strcasecmp(CCONV_CODE_GBL, tocode) || 0 == strcasecmp(CCONV_CODE_GHS, tocode))
 		{
 			cd->cconv_cd = CCONV_BIG_TO_GBL;
 			cd->bg_utf8  = iconv_open(CCONV_CODE_UTF, CCONV_CODE_BIG);
@@ -179,7 +186,7 @@ cconv_t cconv_open(const char* tocode, const char* fromcode)
 
 	if(cd->cconv_cd == CCONV_NULL)
 		cd->iconv_cd = iconv_open(tocode, fromcode);
-	
+
 	if( cd->iconv_cd == (iconv_t)(-1) || cd->gb_utf8  == (iconv_t)(-1)
 	 || cd->bg_utf8  == (iconv_t)(-1) || cd->utf8_gb  == (iconv_t)(-1)
 	 || cd->utf8_bg  == (iconv_t)(-1)) {
@@ -191,17 +198,26 @@ cconv_t cconv_open(const char* tocode, const char* fromcode)
 }
 /* }}} */
 
+size_t iconv_wrapper(iconv_t cd,  char* * inbuf, size_t *inbytesleft, char* * outbuf, size_t *outbytesleft)
+{
+	size_t res = iconv(cd, inbuf, inbytesleft, outbuf, outbytesleft);
+	if (res != (size_t)(-1))
+		return res;
+
+	return errno == EINVAL ? 0 : res;
+}
+
 #define cconv_iconv_first(cd) \
 	ps_outbuf = ps_midbuf = (char*)malloc(o_proc); \
-	if(iconv(cd, inbuf, inbytesleft, &ps_outbuf, &o_proc) == -1) { \
+	iconvctl(cd, ICONV_SET_DISCARD_ILSEQ, &one); \
+	if(iconv_wrapper(cd, inbuf, inbytesleft, &ps_outbuf, &o_proc) == -1) { \
 		free(ps_midbuf); return (size_t)(-1); \
 	} \
-	*ps_outbuf = '\0'; \
 
 #define cconv_cconv_second(n, o) \
 	cd_struct->cconv_cd = n; \
 	ps_inbuf = ps_midbuf; \
-	o_proc   = strlen(ps_midbuf); \
+	o_proc   = m_proc - o_proc; \
 	if((i_proc = cconv(cd, &ps_inbuf, &o_proc, outbuf, outbytesleft)) == -1) { \
 		free(ps_midbuf); return (size_t)(-1); \
 	} \
@@ -216,11 +232,12 @@ cconv_t cconv_open(const char* tocode, const char* fromcode)
 		free(ps_midbuf); return (size_t)(-1); \
 	} \
 	cd_struct->cconv_cd = o; \
-		
+
 #define cconv_iconv_second(c) \
 	ps_outbuf = *outbuf; \
 	ps_inbuf  = ps_midbuf; \
-	if(iconv(c, &ps_inbuf, &i_proc, outbuf, outbytesleft) == -1) { \
+	iconvctl(c, ICONV_SET_DISCARD_ILSEQ, &one); \
+	if(iconv_wrapper(c, &ps_inbuf, &i_proc, outbuf, outbytesleft) == -1) { \
 		free(ps_midbuf); return (size_t)(-1); \
 	} \
 	free(ps_midbuf); \
@@ -250,7 +267,7 @@ size_t cconv(cconv_t cd,
 		char**  outbuf,
 		size_t* outbytesleft)
 {
-	size_t  i_proc = 0, o_proc = 0;
+	size_t  i_proc = 0, o_proc = 0, m_proc = 0;
 #ifdef FreeBSD
 	const char *ps_inbuf  = NULL;
 #else
@@ -259,6 +276,7 @@ size_t cconv(cconv_t cd,
 	char *ps_midbuf, *ps_outbuf = NULL;
 	language_zh_map *m;
 	int map_size;
+	int one = 1;
 
 	if(NULL == inbuf  || NULL == *inbuf  || NULL == inbytesleft || NULL == outbuf || NULL == *outbuf || NULL == outbytesleft)
 		return(size_t)(-1);
@@ -267,6 +285,7 @@ size_t cconv(cconv_t cd,
 	ps_inbuf  = *inbuf;
 	ps_outbuf = *outbuf;
 	o_proc    = cd_struct->size_factor * (*inbytesleft) + EMPTY_END_SIZE;
+	m_proc    = o_proc;
 
 	if((cconv_t)(CCONV_ERROR) == cd)
 		return(size_t)(-1);
@@ -281,6 +300,10 @@ size_t cconv(cconv_t cd,
 
 	case CCONV_UTF_TO_GBL:
 		cconv_cconv_first(CCONV_UTF_TO_UHS, CCONV_UTF_TO_GBL);
+		cconv_iconv_second(cd_struct->utf8_gb);
+
+	case CCONV_UTF_TO_GHT:
+		cconv_cconv_first(CCONV_UTF_TO_UHT, CCONV_UTF_TO_GHT);
 		cconv_iconv_second(cd_struct->utf8_gb);
 
 	case CCONV_UTF_TO_BIG:
@@ -314,14 +337,15 @@ size_t cconv(cconv_t cd,
 	case CCONV_BIG_TO_GBL:
 		cconv_cconv_first(CCONV_BIG_TO_UHS, CCONV_BIG_TO_GBL);
 		cconv_iconv_second(cd_struct->utf8_gb);
-	
+
 	case CCONV_NULL:
 	default:
 		break;
 	} // switch
 
 	ps_outbuf = *outbuf;
-	if(iconv(cd_struct->iconv_cd, inbuf, inbytesleft, outbuf, outbytesleft) == -1)
+	iconvctl(cd_struct->iconv_cd, ICONV_SET_DISCARD_ILSEQ, &one);
+	if(iconv_wrapper(cd_struct->iconv_cd, inbuf, inbytesleft, outbuf, outbytesleft) == -1)
 		return (size_t)(-1);
 
 	return *outbuf - ps_outbuf;
@@ -348,7 +372,7 @@ int cconv_close(cconv_t cd)
 }
 /* }}} */
 
-size_t cconv_utf8(const char** inbuf, size_t* inleft, char**  outbuf, size_t* outleft, const language_zh_map *m, int map_size)
+size_t cconv_utf8(const char** inbuf, size_t* inleft, char** outbuf, size_t* outleft, const language_zh_map *m, int map_size)
 {
 	const char *ps_inbuf;
 	char *ps_outbuf;
@@ -363,7 +387,7 @@ size_t cconv_utf8(const char** inbuf, size_t* inleft, char**  outbuf, size_t* ou
 			break;
 
 		if(i_proc > 1 &&
-		  (index = find_keyword(ps_inbuf, &i_proc, m, 0, map_size - 1, i_conv)) != -1)
+		  (index = find_keyword(ps_inbuf, &i_proc, *inleft, m, 0, map_size - 1, i_conv)) != -1)
 		{
 			o_proc = strlen(map_val(m, index));
 			memcpy(ps_outbuf, map_val(m, index), o_proc);
@@ -374,7 +398,7 @@ size_t cconv_utf8(const char** inbuf, size_t* inleft, char**  outbuf, size_t* ou
 			i_conv    += i_proc;
 			continue;
 		}
-		
+
 		if(i_proc == -1)
 		{
 			errno  = EINVAL;
@@ -396,23 +420,12 @@ size_t cconv_utf8(const char** inbuf, size_t* inleft, char**  outbuf, size_t* ou
 	return o_conv;
 }
 
-int find_keyword(const char* inbytes, size_t* length, const language_zh_map *m, int begin, int end, const int whence)
+int find_keyword(const char* inbytes, size_t* length, size_t max_length, const language_zh_map *m, int begin, int end, const int whence)
 {
-	int location, offset;
-	size_t wwidth, nwidth;
+	int location;
 
-	if((offset = binary_find(inbytes, length, m, begin, end)) == -1)
+	if((location = binary_find(inbytes, length, max_length, m, begin, end)) == -1)
 		return -1;
-
-	/* match the most accurate value */
-	wwidth = *length;
-	do{
-		location = offset;
-		*length  = wwidth;
-		nwidth   = utf8_char_width(const_bin_c_str(inbytes+wwidth));
-		wwidth  += nwidth;
-	}
-	while(nwidth != 0 && (offset = binary_find(inbytes, &wwidth, m, offset, end)) != -1);
 
 	/* extention word fix */
 	if(!match_cond(cond_ptr(m, location), inbytes, strlen(map_key(m, location)), whence))
@@ -424,64 +437,134 @@ int find_keyword(const char* inbytes, size_t* length, const language_zh_map *m, 
 	return location;
 }
 
-/* {{{ int binary_find(cconv_t cd, const char* inbytes, int length, int begin, int end) */
-int binary_find(const char* inbytes, size_t* length, const language_zh_map *m, int begin, int end)
+int _find_range(const char *inbytes, size_t length, const language_zh_map *m,
+				int begin, int end, int *range_begin, int *range_end, int *max_key_length)
 {
-	int middle, last, next_fix = 0;
-	int ret, offset = -1;
-	size_t width, wwidth, nwidth;
-
-	middle = (begin + end) >> 1;
-	width  = *length;
-	last   = end;	
-	while(1)
+	// binary_search
+	int low = begin;
+	int high = end;
+	int middle;
+	while (1)
 	{
-		ret = memcmp(m[middle].key, inbytes, width);
-		if(ret == 0)
+		if (low > high)
 		{
-			if(width == strlen(m[middle].key))
-				return middle;
-
-			/* word key */
-			if(next_fix == 0)
-			{
-				nwidth = utf8_char_width(const_bin_c_str(inbytes+width));
-				wwidth = width + nwidth;
-				if(nwidth != 0 && memcmp(m[middle].key, inbytes, wwidth) <= 0)
-				{
-					while (nwidth != 0
-						&& (offset = binary_find(inbytes, &wwidth, m, offset, end)) != -1)
-					{
-						if(wwidth == strlen(m[offset].key))
-							return offset;
-
-						nwidth = utf8_char_width(const_bin_c_str(inbytes+width));
-						wwidth += nwidth;
-					}
-
-					next_fix = 1;
-				}
-			}
-			ret = 1;
+			return 0;
 		}
 
-		if(ret > 0)
+		middle = (low + high) >> 1;
+		int ret = memcmp(m[middle].key, inbytes, length);
+		if (ret == 0)
 		{
-			end = middle - 1;
-			middle = (begin + end) >> 1;
+			break;
 		}
-		else if(0 > ret)
+		else if (ret > 0)
 		{
-			begin = middle + 1;
-			middle = (begin + end) >> 1;
+			high = middle - 1;
 		}
-	
-		if(end < begin) return -1;
+		else /* if (ret < 0) */
+		{
+			low = middle + 1;
+		}
 	}
 
-	return -1;
+	// find range begin
+	int rbegin = middle;
+	while (rbegin > begin &&
+		   memcmp(m[rbegin - 1].key, inbytes, length) == 0)
+	{
+		rbegin--;
+	}
+	*range_begin = rbegin;
+
+	// find range end
+	int rend = middle;
+	while (rend < end &&
+		   memcmp(m[rend+ 1].key, inbytes, length) == 0)
+	{
+		rend++;
+	}
+	*range_end = rend;
+
+	// get max key length
+	int i;
+	*max_key_length = 0;
+	for (i = rbegin; i <= rend; i++)
+	{
+		size_t key_length = strlen(m[i].key);
+		if (key_length > *max_key_length)
+		{
+			*max_key_length = key_length;
+		}
+	}
+
+	return rend - rbegin + 1;
 }
-/* }}} */
+
+int _find_exact(const char *inbytes, size_t length, const language_zh_map *m, int begin, int end)
+{
+	// binary_search
+	int low = begin;
+	int high = end;
+	int middle;
+	while (1)
+	{
+		if (low > high)
+		{
+			return -1;
+		}
+
+		middle = (low + high) >> 1;
+		int ret = memcmp(m[middle].key, inbytes, length);
+		if (ret == 0)
+		{
+			int key_length = strlen(m[middle].key);
+			if (key_length == length)
+			{
+				return middle;
+			}
+			ret = key_length - length;
+		}
+
+		if (ret > 0)
+		{
+			high = middle - 1;
+		}
+		else /* if (ret < 0) */
+		{
+			low = middle + 1;
+		}
+	}
+}
+
+int binary_find(const char* inbytes, size_t* length, size_t max_length, const language_zh_map *m, int begin, int end)
+{
+	int range_begin, range_end, max_key_length;
+	int result, index;
+	int word_length;
+
+	// find range
+	if (_find_range(inbytes, *length, m, begin, end, &range_begin, &range_end, &max_key_length) <= 0)
+	{
+		return -1;
+	}
+
+	// word match
+	result = -1;
+	word_length = *length;
+	while (word_length <= max_key_length && word_length <= max_length)
+	{
+		index = _find_exact(inbytes, word_length, m, range_begin, range_end);
+		if (index != -1)
+		{
+			*length = word_length;
+			result = index;
+			range_begin = index + 1;
+		}
+		word_length += utf8_char_width(const_bin_c_str(inbytes + word_length));
+	}
+
+	return result;
+}
 
 int match_cond(const factor_zh_map *cond, const char* str, int klen, const int whence)
 {
@@ -499,7 +582,7 @@ int match_cond(const factor_zh_map *cond, const char* str, int klen, const int w
 
 	y_b_null = cond_str = cond_c_str(cond, y_mb);
 	y_ma = cond_str && match_real_cond(cond_str, str, 1, whence);
-	
+
 	y_a_null = cond_str = cond_c_str(cond, y_ma);
 	y_mb = cond_str && match_real_cond(cond_str, str + klen, 0, whence);
 	return (!y_b_null&&!y_a_null) | y_ma | y_mb;
@@ -519,7 +602,7 @@ int match_real_cond(const char* mc, const char* str, int head, const int whence)
 	while(m_one)
 	{
 		if((head == 1 && whence >= strlen(m_one) &&
-			memcmp(str - strlen(m_one), m_one, strlen(m_one)) == 0) 
+			memcmp(str - strlen(m_one), m_one, strlen(m_one)) == 0)
 		 ||(head == 0 && strlen(str) >= strlen(m_one) &&
 			memcmp(str, m_one, strlen(m_one)) == 0)
 		){

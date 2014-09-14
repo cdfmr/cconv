@@ -46,6 +46,7 @@ typedef enum cconv_type
 	CCONV_UTF_TO_UHS,
 	CCONV_UTF_TO_GBL,
 	CCONV_UTF_TO_BIG,
+	CCONV_UTF_TO_GHT
 }
 cconv_type;
 

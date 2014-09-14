@@ -21,7 +21,7 @@ int utf8_char_width(const unsigned char* w)
 	if(w[0] < 0xfc) return 5;
 	if(w[0] < 0xfe) return 6;
 
-	return -1;
+	return 1;
 }
 
 int utf8_char_encode(const unsigned char* w, int* c)
